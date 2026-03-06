@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.env
+*.pdf
+*.tex
+*.log
+*.aux
+*.docx
+paper_engine/
+tmp/
