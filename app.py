@@ -28,10 +28,25 @@ class GenerateRequest(BaseModel):
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
-def extract_sheet_id(url: str) -> str | None:
-    """Extract the Google Sheets spreadsheet ID from any common URL format."""
-    match = re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', url)
-    return match.group(1) if match else None
+def extract_sheet_id(url: str) -> tuple[str | None, str]:
+    """
+    Extract the Google Sheets spreadsheet ID and optionally the gid (tab ID)
+    from any common URL format. Defaults to gid=0 if not found.
+    """
+    sheet_id = None
+    gid = "0"
+
+    # Spreadsheets ID
+    id_match = re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', url)
+    if id_match:
+        sheet_id = id_match.group(1)
+
+    # GID (Tab ID)
+    gid_match = re.search(r'[#&?]gid=([0-9]+)', url)
+    if gid_match:
+        gid = gid_match.group(1)
+
+    return sheet_id, gid
 
 
 def get_sheet_title(sheet_id: str) -> str:
@@ -42,7 +57,10 @@ def get_sheet_title(sheet_id: str) -> str:
     try:
         # Google Sheets HTML page contains the title in <title>
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-        resp = requests.get(url, timeout=10, allow_redirects=True)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
         match = re.search(r'<title>(.*?) - Google Sheets</title>', resp.text)
         if match:
             raw = match.group(1).strip()
@@ -54,35 +72,90 @@ def get_sheet_title(sheet_id: str) -> str:
     return sheet_id
 
 
-def fetch_sheet_as_csv(sheet_id: str) -> list[dict]:
+def fetch_sheet_as_csv(sheet_id: str, gid: str) -> list[dict]:
     """
-    Exports the first sheet of a public Google Spreadsheet as CSV and
-    returns a list of row dicts keyed by the header row.
+    Exports the sheet of a public Google Spreadsheet as CSV.
+    Tries dual-endpoint approach: 
+    1. Google Visualization API (often more resilient for public sheets).
+    2. Standard Export URL (fallback).
     """
-    export_url = (
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-        f"/export?format=csv&gid=0"
-    )
-    resp = requests.get(export_url, timeout=30)
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not fetch sheet (HTTP {resp.status_code}). "
-                   "Make sure the sheet is publicly accessible (Anyone with the link)."
+    gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
+    export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    resp = None
+    error_details = []
+
+    # Attempt 1: GVIZ
+    try:
+        r = requests.get(gviz_url, headers=headers, timeout=20)
+        if r.status_code == 200:
+            resp = r
+        else:
+            error_details.append(f"GVIZ API failed (HTTP {r.status_code})")
+    except Exception as e:
+        error_details.append(f"GVIZ API error: {str(e)}")
+
+    # Attempt 2: Standard Export (if GVIZ failed)
+    if not resp:
+        try:
+            r = requests.get(export_url, headers=headers, timeout=20)
+            if r.status_code == 200:
+                resp = r
+            else:
+                error_details.append(f"Export URL failed (HTTP {r.status_code})")
+        except Exception as e:
+            error_details.append(f"Export URL error: {str(e)}")
+
+    if not resp:
+        # If both fail, raise a detailed error
+        detail_msg = (
+            "Could not fetch sheet data. "
+            "Please ensure the sheet is set to 'Anyone with the link can view' AND "
+            "that 'Viewers can download' is enabled in Share -> Settings. "
+            f"Diagnostics: {'; '.join(error_details)}"
         )
+        raise HTTPException(status_code=400, detail=detail_msg)
 
     # Decode and parse
-    text = resp.content.decode('utf-8-sig')  # handles BOM if present
+    text = resp.content.decode('utf-8-sig')
     reader = csv.DictReader(text.splitlines())
+    
+    # Normalization Map: maps various header formats to our expected keys
+    # Keys in the code: Question_Text, Option_A, Option_B, Option_C, Option_D, Correct_Answer
+    key_map = {
+        'Question_Text': ['Question_Text', 'Question Text', 'Question'],
+        'Option_A': ['Option_A', 'Option A', 'A'],
+        'Option_B': ['Option_B', 'Option B', 'B'],
+        'Option_C': ['Option_C', 'Option C', 'C'],
+        'Option_D': ['Option_D', 'Option D', 'D'],
+        'Correct_Answer': ['Correct_Answer', 'Correct Answer', 'Answer'],
+    }
+
     rows = []
+    # Identify which columns in the CSV map to our internal keys
+    fieldnames = reader.fieldnames or []
+    mapping = {}
+    for internal_key, variations in key_map.items():
+        for field in fieldnames:
+            if field.strip() in variations:
+                mapping[field] = internal_key
+                break
+
     for row in reader:
+        # Normalize the row based on the mapping
+        normalized_row = {mapping.get(k, k): v for k, v in row.items()}
+        
         # Skip completely empty rows
-        if not any(v.strip() for v in row.values()):
+        if not any(v.strip() for v in normalized_row.values()):
             continue
-        # Skip repeated header rows embedded in the data
-        if row.get('Question_Text', '').strip() == 'Question_Text':
+        # Skip repeated header rows
+        if normalized_row.get('Question_Text', '').strip() == 'Question_Text':
             continue
-        rows.append(row)
+        rows.append(normalized_row)
     return rows
 
 
@@ -147,7 +220,7 @@ async def generate_paper(req: GenerateRequest):
       - Answer key on the final page
     Returns the PDF as a downloadable file.
     """
-    sheet_id = extract_sheet_id(req.sheet_link)
+    sheet_id, gid = extract_sheet_id(req.sheet_link)
     if not sheet_id:
         raise HTTPException(
             status_code=400,
@@ -156,7 +229,7 @@ async def generate_paper(req: GenerateRequest):
 
     # Fetch title and data
     title = get_sheet_title(sheet_id)
-    rows  = fetch_sheet_as_csv(sheet_id)
+    rows  = fetch_sheet_as_csv(sheet_id, gid)
 
     if not rows:
         raise HTTPException(status_code=400, detail="No question rows found in the sheet.")
