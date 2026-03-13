@@ -127,6 +127,7 @@ def fetch_sheet_as_csv(sheet_id: str, gid: str) -> list[dict]:
     # Normalization Map: maps various header formats to our expected keys
     # Keys in the code: Question_Text, Option_A, Option_B, Option_C, Option_D, Correct_Answer
     key_map = {
+        'SR_NO': ['SR_NO', 'SR No', 'Serial Number', 'SR_No', 'Sr. No', 'Sr No', 'S.No', 'S.No.', 'sl no', 'SL NO'],
         'Question_Text': ['Question_Text', 'Question Text', 'Question'],
         'Option_A': ['Option_A', 'Option A', 'A'],
         'Option_B': ['Option_B', 'Option B', 'B'],

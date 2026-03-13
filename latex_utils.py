@@ -36,6 +36,7 @@ def normalize_unicode(text: str) -> str:
     text = text.replace('\u201c', '"').replace('\u201d', '"')   # smart double quotes
     text = text.replace('\u2013', '--')         # en-dash
     text = text.replace('\u2014', '---')        # em-dash
+    text = text.replace('\u00a0', ' ')          # non-breaking space → space
     return text
 
 
@@ -157,6 +158,15 @@ def build_latex_document(rows: list[dict], title: str) -> str:
     answer_lines = []
 
     for i, row in enumerate(rows, start=1):
+        # Get Serial Number from data, or fallback to index
+        raw_sr_no = str(row.get('SR_NO', '')).strip()
+        if not raw_sr_no:
+            raw_sr_no = str(i)
+        
+        # Escape SR_NO for LaTeX safely
+        # We don't use process_content here because SR_NO is usually simple text/numbers
+        safe_sr_no = escape_latex_text(raw_sr_no)
+
         q_text = process_content(str(row.get('Question_Text', '')).strip())
         opt_a  = process_content(str(row.get('Option_A',  '')).strip())
         opt_b  = process_content(str(row.get('Option_B',  '')).strip())
@@ -164,8 +174,8 @@ def build_latex_document(rows: list[dict], title: str) -> str:
         opt_d  = process_content(str(row.get('Option_D',  '')).strip())
         answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-        # Question text
-        questions_body += f'\\item {q_text}\n'
+        # Question text with custom label
+        questions_body += f'\\item[\\textbf{{{safe_sr_no}.}}] {q_text}\n'
 
         # Options — only render non-empty options
         opts = [opt_a, opt_b, opt_c, opt_d]
@@ -179,7 +189,7 @@ def build_latex_document(rows: list[dict], title: str) -> str:
         questions_body += r'    \vspace{0.6em}' + '\n'
 
         # Collect answer for key
-        answer_lines.append((i, answer))
+        answer_lines.append((safe_sr_no, answer))
 
     questions_body += r'\end{enumerate}' + '\n\n'
 
@@ -189,8 +199,9 @@ def build_latex_document(rows: list[dict], title: str) -> str:
     answer_key_body += r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
     answer_key_body += r'\vspace{0.5em}' + '\n\n'
     answer_key_body += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
-    for num, ans in answer_lines:
-        answer_key_body += f'    \\item {ans}\n'
+    for sr_no, ans in answer_lines:
+        # sr_no is already escaped from the loop above
+        answer_key_body += f'    \\item[\\textbf{{{sr_no}.}}] {ans}\n'
     answer_key_body += r'\end{enumerate}' + '\n\n'
 
     return preamble + header + questions_body + answer_key_body + r'\end{document}' + '\n'
