@@ -31,12 +31,12 @@ def escape_latex_text(text: str) -> str:
 
 def normalize_unicode(text: str) -> str:
     """Replace common unicode typographic characters with ASCII equivalents."""
-    text = text.replace('\u2212', '-')          # unicode minus → hyphen
-    text = text.replace('\u2018', "'").replace('\u2019', "'")   # smart single quotes
-    text = text.replace('\u201c', '"').replace('\u201d', '"')   # smart double quotes
-    text = text.replace('\u2013', '--')         # en-dash
-    text = text.replace('\u2014', '---')        # em-dash
-    text = text.replace('\u00a0', ' ')          # non-breaking space → space
+    text = text.replace('\u2212', '-')
+    text = text.replace('\u2018', "'").replace('\u2019', "'")
+    text = text.replace('\u201c', '"').replace('\u201d', '"')
+    text = text.replace('\u2013', '--')
+    text = text.replace('\u2014', '---')
+    text = text.replace('\u00a0', ' ')
     return text
 
 
@@ -46,7 +46,6 @@ def download_image(url: str) -> str | None:
         return None
 
     try:
-        # Transform Google Drive view links to direct download URLs
         if 'drive.google.com' in url and '/view' in url:
             match = re.search(r'/file/d/([^/]+)', url)
             if match:
@@ -59,7 +58,7 @@ def download_image(url: str) -> str | None:
         if os.path.exists(path):
             return path
 
-        print(f"Downloading image: {url}…")
+        print(f"Downloading image: {url}...")
         resp = requests.get(url, timeout=15)
         if resp.status_code == 200:
             with open(path, 'wb') as f:
@@ -74,19 +73,37 @@ def download_image(url: str) -> str | None:
 def process_content(content: str) -> str:
     """
     Parses mixed content:
-      - $$...$$  → raw LaTeX block math (passed through unchanged)
-      - $...$    → raw LaTeX inline math (passed through unchanged)
-      - plain text → fully escaped for LaTeX
-
-    Uses re.DOTALL so math can span multiple lines inside the delimiters.
+      - $$...$$  -> raw LaTeX block math (passed through)
+      - $...$    -> raw LaTeX inline math (passed through)
+      - #img-URL# -> downloads image and inserts \\includegraphics
+      - plain text -> fully escaped for LaTeX
     """
     if not content:
         return ''
 
     content = normalize_unicode(content)
 
-    # Split on $$...$$ first, then $...$
-    # Using re.split with capturing groups so we keep the delimiters in the list
+    # Step 1: Replace #img-URL# with placeholders, download images
+    image_map = {}
+    img_counter = [0]
+
+    def _replace_img(m):
+        url = m.group(1).strip()
+        key = f'IMGPLACEHOLDER{img_counter[0]}ENDIMG'
+        img_counter[0] += 1
+        local_path = download_image(url)
+        if local_path:
+            image_map[key] = (
+                r'\newline \includegraphics[max width=\linewidth]{'
+                + local_path + '}'
+            )
+        else:
+            image_map[key] = '[Image]'
+        return key
+
+    content = re.sub(r'#img-(.*?)#', _replace_img, content)
+
+    # Step 2: Split on math delimiters, escape plain text
     pattern = r'(\$\$.*?\$\$|\$.*?\$)'
     parts = re.split(pattern, content, flags=re.DOTALL)
 
@@ -95,36 +112,35 @@ def process_content(content: str) -> str:
         if part is None:
             continue
         if part.startswith('$$') and part.endswith('$$'):
-            # Block math — strip internal newlines to prevent LaTeX blank-line errors
             inner = part[2:-2].replace('\n', ' ').replace('\r', ' ').strip()
             result += f'$${inner}$$'
         elif part.startswith('$') and part.endswith('$') and len(part) >= 2:
-            # Inline math — strip internal newlines
             inner = part[1:-1].replace('\n', ' ').replace('\r', ' ').strip()
             result += f'${inner}$'
         else:
-            # Plain text — escape it
             if part:
                 result += escape_latex_text(part)
+
+    # Step 3: Restore image placeholders (they were escaped, undo that)
+    for key, latex_cmd in image_map.items():
+        result = result.replace(escape_latex_text(key), latex_cmd)
+        result = result.replace(key, latex_cmd)
 
     return result
 
 
 def build_latex_document(rows: list[dict], title: str) -> str:
     """
-    Builds a complete XeLaTeX document string.
-
-    rows: list of dicts with keys:
-        Question_Text, Option_A, Option_B, Option_C, Option_D, Correct_Answer
-        Optionally: SR_NO
-
-    The document contains:
-      1. Full-width title header
-      2. Two-column numbered questions with (a)(b)(c)(d) options
-      3. Two-column Answer Key section on a new page
+    Builds a complete XeLaTeX document:
+      - Two-column page layout (multicols)
+      - Each question in a bordered tabularx table
+      - 3 columns: Q.No | SR No. | Question + Options
+      - Answer key in compact multi-column list
     """
 
-    preamble = r"""\documentclass[10pt,a4paper]{article}
+    has_any_sr_no = any(str(row.get('SR_NO', '')).strip() for row in rows)
+
+    preamble = r"""\documentclass[9pt,a4paper]{article}
 \usepackage{geometry}
 \geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
 \usepackage{amsmath}
@@ -132,49 +148,42 @@ def build_latex_document(rows: list[dict], title: str) -> str:
 \usepackage{amssymb}
 \usepackage{graphicx}
 \usepackage[export]{adjustbox}
-\usepackage{enumitem}
-\usepackage{parskip}
-\usepackage{setspace}
+\usepackage{tabularx}
 \usepackage{multicol}
+\usepackage{enumitem}
+\usepackage{array}
 \usepackage{xltxtra}
 \usepackage{fontspec}
 \setmainfont{Latin Modern Roman}
 
 \setlength{\parskip}{0pt}
 \setlength{\parindent}{0pt}
-\setlength{\columnsep}{1cm}
+\setlength{\columnsep}{0.6cm}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.3}
 
 \begin{document}
 """
 
-    # Title block (full-width, before multicols)
+    # Title block (full width, above the two columns)
     escaped_title = escape_latex_text(title)
     header = (
         r'\begin{center}' + '\n'
-        r'{\LARGE\textbf{' + escaped_title + r'}}\\[0.4em]' + '\n'
+        r'{\LARGE\textbf{' + escaped_title + r'}}\\[0.3em]' + '\n'
         r'\end{center}' + '\n'
         r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
-        r'\vspace{0.5em}' + '\n\n'
+        r'\vspace{0.3em}' + '\n\n'
     )
 
-    # --- Questions section (two-column) ---
-    questions_body = r'\begin{multicols}{2}' + '\n'
-    questions_body += r'\section*{Questions}' + '\n'
-    questions_body += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
+    # ── Questions section (two-column) ──────────────────────────
+    body = r'\begin{multicols}{2}' + '\n'
+    body += r'\raggedcolumns' + '\n\n'
 
-    answer_lines = []
+    answer_data = []
 
     for i, row in enumerate(rows, start=1):
-        # Get Serial Number from data (optional)
         raw_sr_no = str(row.get('SR_NO', '')).strip()
-
-        # Build the question label: always sequential number
-        # If SR_NO present, format as: "1. | Q0042  Question text"
-        if raw_sr_no:
-            safe_sr_no = escape_latex_text(raw_sr_no)
-            q_label = f'\\item \\textbf{{| {safe_sr_no}}} \\quad '
-        else:
-            q_label = f'\\item '
+        safe_sr_no = escape_latex_text(raw_sr_no) if raw_sr_no else ''
 
         q_text = process_content(str(row.get('Question_Text', '')).strip())
         opt_a  = process_content(str(row.get('Option_A',  '')).strip())
@@ -183,42 +192,58 @@ def build_latex_document(rows: list[dict], title: str) -> str:
         opt_d  = process_content(str(row.get('Option_D',  '')).strip())
         answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-        # Question text with sequential label (and optional SR_NO)
-        questions_body += f'{q_label}{q_text}\n'
+        # Build question cell content (question text + options below)
+        cell = q_text
 
-        # Options — only render non-empty options
-        opts = [opt_a, opt_b, opt_c, opt_d]
-        if any(opts):
-            questions_body += r'    \begin{enumerate}[label=(\alph*), topsep=2pt, itemsep=0pt]' + '\n'
-            for opt in opts:
-                if opt:
-                    questions_body += f'        \\item {opt}\n'
-            questions_body += r'    \end{enumerate}' + '\n'
+        opt_parts = []
+        for opt, label in [(opt_a, 'a'), (opt_b, 'b'), (opt_c, 'c'), (opt_d, 'd')]:
+            if opt:
+                opt_parts.append(f'({label})~{opt}')
 
-        questions_body += r'    \vspace{0.4em}' + '\n'
+        if opt_parts:
+            # Arrange options: 2 per line
+            opt_lines = []
+            for j in range(0, len(opt_parts), 2):
+                pair = opt_parts[j:j+2]
+                opt_lines.append(' \\hfill '.join(pair))
+            cell += r' \newline {\small ' + r' \newline '.join(opt_lines) + '}'
 
-        # Collect answer for key
-        if raw_sr_no:
-            answer_lines.append((i, safe_sr_no, answer))
+        # Individual bordered table for this question
+        body += r'\noindent' + '\n'
+        if has_any_sr_no:
+            body += r'\begin{tabularx}{\columnwidth}{|c|c|X|}' + '\n'
+            body += r'\hline' + '\n'
+            body += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\\n'
         else:
-            answer_lines.append((i, None, answer))
+            body += r'\begin{tabularx}{\columnwidth}{|c|X|}' + '\n'
+            body += r'\hline' + '\n'
+            body += f'\\textbf{{{i}}} & {cell} \\\\\n'
 
-    questions_body += r'\end{enumerate}' + '\n'
-    questions_body += r'\end{multicols}' + '\n\n'
+        body += r'\hline' + '\n'
+        body += r'\end{tabularx}' + '\n'
+        body += r'\vspace{0.2em}' + '\n\n'
 
-    # --- Answer Key section (two-column) ---
-    answer_key_body = r'\newpage' + '\n'
-    answer_key_body += r'\begin{multicols}{2}' + '\n'
-    answer_key_body += r'\section*{Answer Key}' + '\n'
-    answer_key_body += r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
-    answer_key_body += r'\vspace{0.5em}' + '\n\n'
-    answer_key_body += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
-    for seq_no, sr_no, ans in answer_lines:
-        if sr_no:
-            answer_key_body += f'    \\item \\textbf{{| {sr_no}}} \\quad {ans}\n'
+        answer_data.append((i, safe_sr_no, answer))
+
+    body += r'\end{multicols}' + '\n\n'
+
+    # ── Answer Key (compact multi-column list) ──────────────────
+    body += r'\newpage' + '\n'
+    body += r'\begin{center}' + '\n'
+    body += r'{\Large\textbf{Answer Key}}\\[0.3em]' + '\n'
+    body += r'\end{center}' + '\n'
+    body += r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
+    body += r'\vspace{0.3em}' + '\n\n'
+
+    body += r'\begin{multicols}{4}' + '\n'
+    body += r'\small' + '\n'
+    body += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
+    for seq, sr, ans in answer_data:
+        if sr:
+            body += f'  \\item {sr}: {ans}\n'
         else:
-            answer_key_body += f'    \\item {ans}\n'
-    answer_key_body += r'\end{enumerate}' + '\n'
-    answer_key_body += r'\end{multicols}' + '\n\n'
+            body += f'  \\item {ans}\n'
+    body += r'\end{enumerate}' + '\n'
+    body += r'\end{multicols}' + '\n\n'
 
-    return preamble + header + questions_body + answer_key_body + r'\end{document}' + '\n'
+    return preamble + header + body + r'\end{document}' + '\n'
