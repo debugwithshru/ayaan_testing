@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import traceback
+import zipfile
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -160,19 +161,23 @@ def fetch_sheet_as_csv(sheet_id: str, gid: str) -> list[dict]:
     return rows
 
 
-def compile_latex(tex_content: str, output_name: str) -> str:
+def compile_latex(tex_content: str, output_name: str) -> tuple[str, str]:
     """
     Writes the .tex content to a temp directory, runs xelatex twice
-    (second pass stabilises page numbers / TOC), and returns the path
-    to the generated PDF.
+    (second pass stabilises page numbers / TOC), generates a DOCX via
+    pandoc, bundles both into a ZIP, and returns the path to the ZIP
+    and the work directory.
     """
     work_dir = tempfile.mkdtemp(prefix="paper_")
     tex_path = os.path.join(work_dir, f"{output_name}.tex")
     pdf_path = os.path.join(work_dir, f"{output_name}.pdf")
+    docx_path = os.path.join(work_dir, f"{output_name}.docx")
+    zip_path = os.path.join(work_dir, f"{output_name}.zip")
 
     with open(tex_path, 'w', encoding='utf-8') as f:
         f.write(tex_content)
 
+    # ── XeLaTeX compilation (PDF) ─────────────────────────────
     xelatex_cmd = [
         'xelatex',
         '-interaction=nonstopmode',
@@ -205,7 +210,30 @@ def compile_latex(tex_content: str, output_name: str) -> str:
     if not os.path.exists(pdf_path):
         raise HTTPException(status_code=500, detail="PDF not found after compilation.")
 
-    return pdf_path, work_dir
+    # ── Pandoc conversion (DOCX) ──────────────────────────────
+    pandoc_cmd = [
+        'pandoc',
+        tex_path,
+        '-o', docx_path,
+    ]
+    pandoc_result = subprocess.run(
+        pandoc_cmd,
+        capture_output=True,
+        text=True,
+        cwd=work_dir,
+    )
+    if pandoc_result.returncode != 0:
+        print(f"Pandoc warning/error (non-fatal): {pandoc_result.stderr}")
+        # Don't fail the whole request — PDF is still available
+
+    # ── Bundle into ZIP ───────────────────────────────────────
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        if os.path.exists(pdf_path):
+            zf.write(pdf_path, f"{output_name}.pdf")
+        if os.path.exists(docx_path):
+            zf.write(docx_path, f"{output_name}.docx")
+
+    return zip_path, work_dir
 
 
 # ─────────────────────────────────────────────
@@ -238,15 +266,15 @@ async def generate_paper(req: GenerateRequest):
     # Build LaTeX
     tex_content = build_latex_document(rows, title)
 
-    # Compile
+    # Compile PDF + generate DOCX + bundle ZIP
     safe_name = re.sub(r'[^\w\-]', '_', title)[:80] or "paper"
-    pdf_path, work_dir = compile_latex(tex_content, safe_name)
+    zip_path, work_dir = compile_latex(tex_content, safe_name)
 
-    # Stream back and schedule cleanup
+    # Stream back the ZIP
     response = FileResponse(
-        path=pdf_path,
-        media_type='application/pdf',
-        filename=f"{safe_name}.pdf",
+        path=zip_path,
+        media_type='application/zip',
+        filename=f"{safe_name}.zip",
         background=None,
     )
 
