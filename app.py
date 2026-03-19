@@ -197,17 +197,22 @@ def compile_latex(pdf_tex: str, docx_tex: str, output_name: str) -> tuple[str, s
             cwd=work_dir,
         )
         if result.returncode != 0 and run == 1:
-            log_path = os.path.join(work_dir, f"{output_name}.log")
-            log_excerpt = ""
+            log_path = os.path.join(work_dir, f"{output_name}_pdf.log")
+            log_excerpt = "No log found."
             if os.path.exists(log_path):
                 with open(log_path, 'r', encoding='utf-8', errors='replace') as lf:
                     lines = lf.readlines()
-                # Find error lines
+                # Find error lines (typically start with !) 
+                # or just give the last 50 lines for context
                 err_lines = [l for l in lines if l.startswith('!')]
-                log_excerpt = ''.join(err_lines[-20:])
+                if err_lines:
+                    log_excerpt = ''.join(err_lines[-10:]) + "\n...\n" + ''.join(lines[-20:])
+                else:
+                    log_excerpt = ''.join(lines[-40:])
+            
             raise HTTPException(
                 status_code=500,
-                detail=f"XeLaTeX compilation failed.\n{log_excerpt}"
+                detail=f"XeLaTeX compilation failed. Log excerpt:\n{log_excerpt}"
             )
 
     if not os.path.exists(pdf_output_path):

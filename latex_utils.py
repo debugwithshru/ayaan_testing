@@ -140,18 +140,18 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
 
     has_any_sr_no = any(str(row.get('SR_NO', '')).strip() for row in rows)
 
-    # Logo Setup
-    # Path will be /app/COCOON_LOGO.png in Docker. 
-    # Attempt to locate locally if running locally for test scripts.
-    logo_path = "COCOON_LOGO.png"
+    # Logo Setup: Must use absolute path for Docker/XeLaTeX temp directory
+    logo_path = "/app/COCOON_LOGO.png"
     if not os.path.exists(logo_path):
-        # Fallback to webp if png is not yet converted locally
+        # Local development fallback
         if os.path.exists("COCOON_LOGO.webp"):
-            logo_path = "COCOON_LOGO.webp"
+            logo_path = os.path.abspath("COCOON_LOGO.webp")
+        elif os.path.exists("COCOON_LOGO.png"):
+            logo_path = os.path.abspath("COCOON_LOGO.png")
 
     if for_docx:
         # Preamble for Word output
-        preamble = r"""\documentclass[10pt,a4paper]{article}
+        preamble = r"""\documentclass[11pt,a4paper]{article}
 \usepackage{geometry}
 \geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
 \usepackage{amsmath}
@@ -173,7 +173,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
 """
     else:
         # Preamble for PDF (Two column)
-        preamble = r"""\documentclass[9pt,a4paper]{article}
+        preamble = r"""\documentclass[11pt,a4paper]{article}
 \usepackage{geometry}
 \geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
 \usepackage{amsmath}
@@ -205,7 +205,8 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
     
     header = r'\begin{center}' + '\n'
     header += r'  \begin{minipage}{0.15\textwidth}' + '\n'
-    if os.path.exists(logo_path) or logo_path == "COCOON_LOGO.png":
+    # Use logo if file exists; otherwise placeholder
+    if os.path.exists(logo_path) or logo_path == "/app/COCOON_LOGO.png":
         header += rf'    \includegraphics[width=\textwidth]{{{logo_path}}}' + '\n'
     else:
         header += r'    [LOGO]' + '\n'
@@ -247,13 +248,14 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
             opt_d  = process_content(str(row.get('Option_D',  '')).strip())
             answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
+            # Options for Word: simplified grid
             cell = q_text
-            opts = []
-            for lab, val in [('a', opt_a), ('b', opt_b), ('c', opt_c), ('d', opt_d)]:
-                if val: opts.append(f'({lab})~{val}')
+            option_grid = r' \newline \begin{tabular}{@{}p{0.45\linewidth}p{0.45\linewidth}@{}}' + '\n'
+            option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\' + '\n'
+            option_grid += f' (c)~{opt_c} & (d)~{opt_d} \\\\' + '\n'
+            option_grid += r'\end{tabular}'
             
-            if opts:
-                cell += r' \newline ' + r' \newline '.join([' '.join(opts[j:j+2]) for j in range(0, len(opts), 2)])
+            cell += option_grid
 
             if has_any_sr_no:
                 content += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\ \\hline\n'
@@ -278,17 +280,14 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
             opt_d  = process_content(str(row.get('Option_D',  '')).strip())
             answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-            cell = q_text
-            opt_parts = []
-            for opt, label in [(opt_a, 'a'), (opt_b, 'b'), (opt_c, 'c'), (opt_d, 'd')]:
-                if opt: opt_parts.append(f'({label})~{opt}')
+            # Options for PDF: Balanced 2x2 grid using nested tabular for perfect alignment
+            # Options (b) and (d) are moved left by using a 45% / 45% split
+            option_grid = r' \begin{tabular}{@{}p{0.45\linewidth}p{0.45\linewidth}@{}}' + '\n'
+            option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\' + '\n'
+            option_grid += f' (c)~{opt_c} & (d)~{opt_d} \\' + '\n'
+            option_grid += r'\end{tabular}'
 
-            if opt_parts:
-                opt_lines = []
-                for j in range(0, len(opt_parts), 2):
-                    pair = opt_parts[j:j+2]
-                    opt_lines.append(' \\hfill '.join(pair))
-                cell += r' \newline {\small ' + r' \newline '.join(opt_lines) + '}'
+            cell = q_text + r' \newline {\small ' + option_grid + '}'
 
             content += r'\noindent' + '\n'
             if has_any_sr_no:
