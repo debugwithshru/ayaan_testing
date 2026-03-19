@@ -116,15 +116,17 @@ def build_latex_document(rows: list[dict], title: str) -> str:
 
     rows: list of dicts with keys:
         Question_Text, Option_A, Option_B, Option_C, Option_D, Correct_Answer
+        Optionally: SR_NO
 
     The document contains:
-      1. Numbered questions with (a)(b)(c)(d) options
-      2. An Answer Key section at the very end
+      1. Full-width title header
+      2. Two-column numbered questions with (a)(b)(c)(d) options
+      3. Two-column Answer Key section on a new page
     """
 
-    preamble = r"""\documentclass[12pt,a4paper]{article}
+    preamble = r"""\documentclass[10pt,a4paper]{article}
 \usepackage{geometry}
-\geometry{top=1in, bottom=1in, left=1in, right=1in}
+\geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{amssymb}
@@ -133,15 +135,19 @@ def build_latex_document(rows: list[dict], title: str) -> str:
 \usepackage{enumitem}
 \usepackage{parskip}
 \usepackage{setspace}
-\onehalfspacing
+\usepackage{multicol}
 \usepackage{xltxtra}
 \usepackage{fontspec}
 \setmainfont{Latin Modern Roman}
 
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{0pt}
+\setlength{\columnsep}{1cm}
+
 \begin{document}
 """
 
-    # Title block
+    # Title block (full-width, before multicols)
     escaped_title = escape_latex_text(title)
     header = (
         r'\begin{center}' + '\n'
@@ -151,21 +157,24 @@ def build_latex_document(rows: list[dict], title: str) -> str:
         r'\vspace{0.5em}' + '\n\n'
     )
 
-    # Questions section
-    questions_body = r'\section*{Questions}' + '\n'
+    # --- Questions section (two-column) ---
+    questions_body = r'\begin{multicols}{2}' + '\n'
+    questions_body += r'\section*{Questions}' + '\n'
     questions_body += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
 
     answer_lines = []
 
     for i, row in enumerate(rows, start=1):
-        # Get Serial Number from data, or fallback to index
+        # Get Serial Number from data (optional)
         raw_sr_no = str(row.get('SR_NO', '')).strip()
-        if not raw_sr_no:
-            raw_sr_no = str(i)
-        
-        # Escape SR_NO for LaTeX safely
-        # We don't use process_content here because SR_NO is usually simple text/numbers
-        safe_sr_no = escape_latex_text(raw_sr_no)
+
+        # Build the question label: always sequential number
+        # If SR_NO present, format as: "1. | Q0042  Question text"
+        if raw_sr_no:
+            safe_sr_no = escape_latex_text(raw_sr_no)
+            q_label = f'\\item \\textbf{{| {safe_sr_no}}} \\quad '
+        else:
+            q_label = f'\\item '
 
         q_text = process_content(str(row.get('Question_Text', '')).strip())
         opt_a  = process_content(str(row.get('Option_A',  '')).strip())
@@ -174,8 +183,8 @@ def build_latex_document(rows: list[dict], title: str) -> str:
         opt_d  = process_content(str(row.get('Option_D',  '')).strip())
         answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-        # Question text with custom label
-        questions_body += f'\\item[\\textbf{{{safe_sr_no}.}}] {q_text}\n'
+        # Question text with sequential label (and optional SR_NO)
+        questions_body += f'{q_label}{q_text}\n'
 
         # Options — only render non-empty options
         opts = [opt_a, opt_b, opt_c, opt_d]
@@ -186,22 +195,30 @@ def build_latex_document(rows: list[dict], title: str) -> str:
                     questions_body += f'        \\item {opt}\n'
             questions_body += r'    \end{enumerate}' + '\n'
 
-        questions_body += r'    \vspace{0.6em}' + '\n'
+        questions_body += r'    \vspace{0.4em}' + '\n'
 
         # Collect answer for key
-        answer_lines.append((safe_sr_no, answer))
+        if raw_sr_no:
+            answer_lines.append((i, safe_sr_no, answer))
+        else:
+            answer_lines.append((i, None, answer))
 
-    questions_body += r'\end{enumerate}' + '\n\n'
+    questions_body += r'\end{enumerate}' + '\n'
+    questions_body += r'\end{multicols}' + '\n\n'
 
-    # Answer Key section
+    # --- Answer Key section (two-column) ---
     answer_key_body = r'\newpage' + '\n'
+    answer_key_body += r'\begin{multicols}{2}' + '\n'
     answer_key_body += r'\section*{Answer Key}' + '\n'
     answer_key_body += r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
     answer_key_body += r'\vspace{0.5em}' + '\n\n'
     answer_key_body += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
-    for sr_no, ans in answer_lines:
-        # sr_no is already escaped from the loop above
-        answer_key_body += f'    \\item[\\textbf{{{sr_no}.}}] {ans}\n'
-    answer_key_body += r'\end{enumerate}' + '\n\n'
+    for seq_no, sr_no, ans in answer_lines:
+        if sr_no:
+            answer_key_body += f'    \\item \\textbf{{| {sr_no}}} \\quad {ans}\n'
+        else:
+            answer_key_body += f'    \\item {ans}\n'
+    answer_key_body += r'\end{enumerate}' + '\n'
+    answer_key_body += r'\end{multicols}' + '\n\n'
 
     return preamble + header + questions_body + answer_key_body + r'\end{document}' + '\n'
