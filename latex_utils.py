@@ -131,7 +131,10 @@ def process_content(content: str) -> str:
 
 def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, test_title: str | None = None) -> str:
     """
-    Builds a complete XeLaTeX document optimized for either PDF or Word (via Pandoc).
+    Builds a complete XeLaTeX document optimized for either PDF or Word.
+    - 12pt font size
+    - 3pt vertical gap between header lines
+    - 3pt vertical gap between option lines
     """
 
     has_any_sr_no = any(str(row.get('SR_NO', '')).strip() for row in rows)
@@ -146,7 +149,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
 
     if for_docx:
         # Preamble for Word output
-        preamble = r"""\documentclass[11pt,a4paper]{article}
+        preamble = r"""\documentclass[12pt,a4paper]{article}
 \usepackage{geometry}
 \geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
 \usepackage{amsmath}
@@ -169,7 +172,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
 """
     else:
         # Preamble for PDF (Two column)
-        preamble = r"""\documentclass[11pt,a4paper]{article}
+        preamble = r"""\documentclass[12pt,a4paper]{article}
 \usepackage{geometry}
 \geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
 \usepackage{amsmath}
@@ -199,7 +202,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
     header_subtitle = escape_latex_text(test_title or title)
     
     if for_docx:
-        # Word needs a TABLE for the header to keep Logo left and Text center
+        # Word Header (Table based)
         header = r'\begin{center}' + '\n'
         header += r'  \begin{tabular}{@{}m{2.5cm}m{\dimexpr\textwidth-3cm\relax}@{}}' + '\n'
         if os.path.exists(logo_path) or logo_path == "/app/COCOON_LOGO.png":
@@ -207,8 +210,8 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
         else:
             header += r'    [LOGO] &' + '\n'
         header += r'    \begin{center}' + '\n'
-        header += rf'      {{\LARGE\textbf{{{header_title}}}}}\\[0.2em]' + '\n'
-        header += rf'      {{\Large\textbf{{{header_subtitle}}}}}' + '\n' # Bold title
+        header += rf'      {{\LARGE\textbf{{{header_title}}}}}\\[3pt]' + '\n' # 3pt gap
+        header += rf'      {{\Large\textbf{{{header_subtitle}}}}}' + '\n'
         header += r'    \end{center}' + '\n'
         header += r'  \end{tabular}' + '\n'
         header += r'\end{center}' + '\n'
@@ -223,8 +226,8 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
         header += r'  \end{minipage}' + '\n'
         header += r'  \begin{minipage}{0.8\textwidth}' + '\n'
         header += r'    \begin{center}' + '\n'
-        header += rf'      {{\LARGE\textbf{{{header_title}}}}}\\[0.2em]' + '\n'
-        header += rf'      {{\Large\textbf{{{header_subtitle}}}}}' + '\n' # Bold title
+        header += rf'      {{\LARGE\textbf{{{header_title}}}}}\\[3pt]' + '\n' # 3pt gap
+        header += rf'      {{\Large\textbf{{{header_subtitle}}}}}' + '\n'
         header += r'    \end{center}' + '\n'
         header += r'  \end{minipage}' + '\n'
         header += r'\end{center}' + '\n'
@@ -236,7 +239,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
     answer_data = []
 
     if for_docx:
-        # Word-optimized: Individual tables per question for cleaner conversion
+        # Word Questions
         for i, row in enumerate(rows, start=1):
             raw_sr_no = str(row.get('SR_NO', '')).strip()
             safe_sr_no = escape_latex_text(raw_sr_no) if raw_sr_no else ''
@@ -247,9 +250,9 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
             opt_d  = process_content(str(row.get('Option_D',  '')).strip())
             answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-            # Options grid for Word
+            # Options table for Word
             option_grid = r' \begin{tabular}{@{}p{0.45\linewidth}p{0.45\linewidth}@{}}' + '\n'
-            option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\' + '\n'
+            option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\[3pt]' + '\n' # 3pt gap
             option_grid += f' (c)~{opt_c} & (d)~{opt_d} \\\\' + '\n'
             option_grid += r'\end{tabular}'
             
@@ -257,7 +260,6 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
 
             content += r'\noindent' + '\n'
             if has_any_sr_no:
-                # Use tabularx for Word too if possible, Pandoc handles simple tabularx
                 content += r'\begin{tabularx}{\textwidth}{|c|c|X|}' + '\n'
                 content += r'\hline' + '\n'
                 content += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\' + '\n'
@@ -271,7 +273,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
             answer_data.append((i, safe_sr_no, answer))
 
     else:
-        # PDF-optimized layout
+        # PDF Questions
         content += r'\begin{multicols}{2}' + '\n'
         content += r'\raggedcolumns' + '\n\n'
 
@@ -285,9 +287,9 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
             opt_d  = process_content(str(row.get('Option_D',  '')).strip())
             answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-            # Options for PDF: Balanced 2x2 grid
+            # Balanced 2x2 grid for PDF
             option_grid = r' \begin{tabular}{@{}p{0.45\linewidth}p{0.45\linewidth}@{}}' + '\n'
-            option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\' + '\n'
+            option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\[3pt]' + '\n' # 3pt gap
             option_grid += f' (c)~{opt_c} & (d)~{opt_d} \\' + '\n'
             option_grid += r'\end{tabular}'
 
