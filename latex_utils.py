@@ -73,8 +73,8 @@ def download_image(url: str) -> str | None:
 def process_content(content: str) -> str:
     """
     Parses mixed content:
-      - $$...$$  -> raw LaTeX block math (passed through)
-      - $...$    -> raw LaTeX inline math (passed through)
+      - $$...$$  -> raw LaTeX block math
+      - $...$    -> raw LaTeX inline math
       - #img-URL# -> downloads image and inserts \\includegraphics
       - plain text -> fully escaped for LaTeX
     """
@@ -121,7 +121,7 @@ def process_content(content: str) -> str:
             if part:
                 result += escape_latex_text(part)
 
-    # Step 3: Restore image placeholders (they were escaped, undo that)
+    # Step 3: Restore image placeholders
     for key, latex_cmd in image_map.items():
         result = result.replace(escape_latex_text(key), latex_cmd)
         result = result.replace(key, latex_cmd)
@@ -129,18 +129,40 @@ def process_content(content: str) -> str:
     return result
 
 
-def build_latex_document(rows: list[dict], title: str) -> str:
+def build_latex_document(rows: list[dict], title: str, for_docx: bool = False) -> str:
     """
-    Builds a complete XeLaTeX document:
-      - Two-column page layout (multicols)
-      - Each question in a bordered tabularx table
-      - 3 columns: Q.No | SR No. | Question + Options
-      - Answer key in compact multi-column list
+    Builds a XeLaTeX document:
+      - for_docx=False (PDF): Two-column layout with individual tabularx tables.
+      - for_docx=True (Word): Single-column longtable optimized for Pandoc.
     """
 
     has_any_sr_no = any(str(row.get('SR_NO', '')).strip() for row in rows)
 
-    preamble = r"""\documentclass[9pt,a4paper]{article}
+    if for_docx:
+        # Preamble for Word output (Simplified, no multicols)
+        preamble = r"""\documentclass[10pt,a4paper]{article}
+\usepackage{geometry}
+\geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage[export]{adjustbox}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xltxtra}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.5}
+
+\begin{document}
+"""
+    else:
+        # Preamble for PDF (Two column, multicols)
+        preamble = r"""\documentclass[9pt,a4paper]{article}
 \usepackage{geometry}
 \geometry{top=1.27cm, bottom=1.27cm, left=1.27cm, right=1.27cm}
 \usepackage{amsmath}
@@ -165,7 +187,6 @@ def build_latex_document(rows: list[dict], title: str) -> str:
 \begin{document}
 """
 
-    # Title block (full width, above the two columns)
     escaped_title = escape_latex_text(title)
     header = (
         r'\begin{center}' + '\n'
@@ -175,75 +196,118 @@ def build_latex_document(rows: list[dict], title: str) -> str:
         r'\vspace{0.3em}' + '\n\n'
     )
 
-    # ── Questions section (two-column) ──────────────────────────
-    body = r'\begin{multicols}{2}' + '\n'
-    body += r'\raggedcolumns' + '\n\n'
-
+    content = ""
     answer_data = []
 
-    for i, row in enumerate(rows, start=1):
-        raw_sr_no = str(row.get('SR_NO', '')).strip()
-        safe_sr_no = escape_latex_text(raw_sr_no) if raw_sr_no else ''
-
-        q_text = process_content(str(row.get('Question_Text', '')).strip())
-        opt_a  = process_content(str(row.get('Option_A',  '')).strip())
-        opt_b  = process_content(str(row.get('Option_B',  '')).strip())
-        opt_c  = process_content(str(row.get('Option_C',  '')).strip())
-        opt_d  = process_content(str(row.get('Option_D',  '')).strip())
-        answer = process_content(str(row.get('Correct_Answer', '')).strip())
-
-        # Build question cell content (question text + options below)
-        cell = q_text
-
-        opt_parts = []
-        for opt, label in [(opt_a, 'a'), (opt_b, 'b'), (opt_c, 'c'), (opt_d, 'd')]:
-            if opt:
-                opt_parts.append(f'({label})~{opt}')
-
-        if opt_parts:
-            # Arrange options: 2 per line
-            opt_lines = []
-            for j in range(0, len(opt_parts), 2):
-                pair = opt_parts[j:j+2]
-                opt_lines.append(' \\hfill '.join(pair))
-            cell += r' \newline {\small ' + r' \newline '.join(opt_lines) + '}'
-
-        # Individual bordered table for this question
-        body += r'\noindent' + '\n'
+    if for_docx:
+        # Word-optimized: Single longtable for the whole document
         if has_any_sr_no:
-            body += r'\begin{tabularx}{\columnwidth}{|c|c|X|}' + '\n'
-            body += r'\hline' + '\n'
-            body += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\\n'
+            col_spec = r'|c|c|p{\dimexpr\textwidth-4.2cm\relax}|'
+            tbl_header = r'\textbf{Q.No} & \textbf{SR No.} & \textbf{Question} \\ \hline'
         else:
-            body += r'\begin{tabularx}{\columnwidth}{|c|X|}' + '\n'
-            body += r'\hline' + '\n'
-            body += f'\\textbf{{{i}}} & {cell} \\\\\n'
+            col_spec = r'|c|p{\dimexpr\textwidth-2cm\relax}|'
+            tbl_header = r'\textbf{Q.No} & \textbf{Question} \\ \hline'
 
-        body += r'\hline' + '\n'
-        body += r'\end{tabularx}' + '\n'
-        body += r'\vspace{0.2em}' + '\n\n'
+        content += r'\section*{Questions}' + '\n'
+        content += r'\begin{longtable}{' + col_spec + '}\n'
+        content += r'\hline' + '\n'
+        content += tbl_header + '\n'
+        content += r'\endhead' + '\n'
 
-        answer_data.append((i, safe_sr_no, answer))
+        for i, row in enumerate(rows, start=1):
+            raw_sr_no = str(row.get('SR_NO', '')).strip()
+            safe_sr_no = escape_latex_text(raw_sr_no) if raw_sr_no else ''
 
-    body += r'\end{multicols}' + '\n\n'
+            q_text = process_content(str(row.get('Question_Text', '')).strip())
+            opt_a  = process_content(str(row.get('Option_A',  '')).strip())
+            opt_b  = process_content(str(row.get('Option_B',  '')).strip())
+            opt_c  = process_content(str(row.get('Option_C',  '')).strip())
+            opt_d  = process_content(str(row.get('Option_D',  '')).strip())
+            answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-    # ── Answer Key (compact multi-column list) ──────────────────
-    body += r'\newpage' + '\n'
-    body += r'\begin{center}' + '\n'
-    body += r'{\Large\textbf{Answer Key}}\\[0.3em]' + '\n'
-    body += r'\end{center}' + '\n'
-    body += r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
-    body += r'\vspace{0.3em}' + '\n\n'
+            # For Word, we use simple line breaks \newline
+            cell = q_text
+            opts = []
+            for lab, val in [('a', opt_a), ('b', opt_b), ('c', opt_c), ('d', opt_d)]:
+                if val: opts.append(f'({lab})~{val}')
+            
+            if opts:
+                # 2 per line
+                cell += r' \newline ' + r' \newline '.join([' '.join(opts[j:j+2]) for j in range(0, len(opts), 2)])
 
-    body += r'\begin{multicols}{4}' + '\n'
-    body += r'\small' + '\n'
-    body += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
+            if has_any_sr_no:
+                content += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\ \\hline\n'
+            else:
+                content += f'\\textbf{{{i}}} & {cell} \\\\ \\hline\n'
+            
+            answer_data.append((i, safe_sr_no, answer))
+        
+        content += r'\end{longtable}' + '\n\n'
+
+    else:
+        # PDF-optimized: multicols + individual tabularx
+        content += r'\begin{multicols}{2}' + '\n'
+        content += r'\raggedcolumns' + '\n\n'
+
+        for i, row in enumerate(rows, start=1):
+            raw_sr_no = str(row.get('SR_NO', '')).strip()
+            safe_sr_no = escape_latex_text(raw_sr_no) if raw_sr_no else ''
+
+            q_text = process_content(str(row.get('Question_Text', '')).strip())
+            opt_a  = process_content(str(row.get('Option_A',  '')).strip())
+            opt_b  = process_content(str(row.get('Option_B',  '')).strip())
+            opt_c  = process_content(str(row.get('Option_C',  '')).strip())
+            opt_d  = process_content(str(row.get('Option_D',  '')).strip())
+            answer = process_content(str(row.get('Correct_Answer', '')).strip())
+
+            cell = q_text
+            opt_parts = []
+            for opt, label in [(opt_a, 'a'), (opt_b, 'b'), (opt_c, 'c'), (opt_d, 'd')]:
+                if opt: opt_parts.append(f'({label})~{opt}')
+
+            if opt_parts:
+                opt_lines = []
+                for j in range(0, len(opt_parts), 2):
+                    pair = opt_parts[j:j+2]
+                    opt_lines.append(' \\hfill '.join(pair))
+                cell += r' \newline {\small ' + r' \newline '.join(opt_lines) + '}'
+
+            content += r'\noindent' + '\n'
+            if has_any_sr_no:
+                content += r'\begin{tabularx}{\columnwidth}{|c|c|X|}' + '\n'
+                content += r'\hline' + '\n'
+                content += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\\n'
+            else:
+                content += r'\begin{tabularx}{\columnwidth}{|c|X|}' + '\n'
+                content += r'\hline' + '\n'
+                content += f'\\textbf{{{i}}} & {cell} \\\\\n'
+
+            content += r'\hline' + '\n'
+            content += r'\end{tabularx}' + '\n'
+            content += r'\vspace{0.2em}' + '\n\n'
+
+            answer_data.append((i, safe_sr_no, answer))
+
+        content += r'\end{multicols}' + '\n\n'
+
+    # Answer Key section
+    content += r'\newpage' + '\n'
+    content += r'\begin{center}' + '\n'
+    content += r'{\Large\textbf{Answer Key}}\\[0.3em]' + '\n'
+    content += r'\end{center}' + '\n'
+    content += r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
+    content += r'\vspace{0.3em}' + '\n\n'
+
+    # 4 Columns for Answer Key
+    content += r'\begin{multicols}{4}' + '\n'
+    content += r'\small' + '\n'
+    content += r'\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]' + '\n'
     for seq, sr, ans in answer_data:
         if sr:
-            body += f'  \\item {sr}: {ans}\n'
+            content += f'  \\item {sr}: {ans}\n'
         else:
-            body += f'  \\item {ans}\n'
-    body += r'\end{enumerate}' + '\n'
-    body += r'\end{multicols}' + '\n\n'
+            content += f'  \\item {ans}\n'
+    content += r'\end{enumerate}' + '\n'
+    content += r'\end{multicols}' + '\n\n'
 
-    return preamble + header + body + r'\end{document}' + '\n'
+    return preamble + header + content + r'\end{document}' + '\n'

@@ -161,21 +161,23 @@ def fetch_sheet_as_csv(sheet_id: str, gid: str) -> list[dict]:
     return rows
 
 
-def compile_latex(tex_content: str, output_name: str) -> tuple[str, str]:
+def compile_latex(pdf_tex: str, docx_tex: str, output_name: str) -> tuple[str, str]:
     """
     Writes the .tex content to a temp directory, runs xelatex twice
-    (second pass stabilises page numbers / TOC), generates a DOCX via
-    pandoc, bundles both into a ZIP, and returns the path to the ZIP
-    and the work directory.
+    for the PDF, and uses the docx_tex with pandoc for the DOCX.
+    Bundles both into a ZIP and returns the path.
     """
     work_dir = tempfile.mkdtemp(prefix="paper_")
-    tex_path = os.path.join(work_dir, f"{output_name}.tex")
-    pdf_path = os.path.join(work_dir, f"{output_name}.pdf")
+    pdf_tex_path = os.path.join(work_dir, f"{output_name}_pdf.tex")
+    docx_tex_path = os.path.join(work_dir, f"{output_name}_docx.tex")
+    pdf_output_path = os.path.join(work_dir, f"{output_name}_pdf.pdf")
     docx_path = os.path.join(work_dir, f"{output_name}.docx")
     zip_path = os.path.join(work_dir, f"{output_name}.zip")
 
-    with open(tex_path, 'w', encoding='utf-8') as f:
-        f.write(tex_content)
+    with open(pdf_tex_path, 'w', encoding='utf-8') as f:
+        f.write(pdf_tex)
+    with open(docx_tex_path, 'w', encoding='utf-8') as f:
+        f.write(docx_tex)
 
     # ── XeLaTeX compilation (PDF) ─────────────────────────────
     xelatex_cmd = [
@@ -183,7 +185,7 @@ def compile_latex(tex_content: str, output_name: str) -> tuple[str, str]:
         '-interaction=nonstopmode',
         '-halt-on-error',
         f'-output-directory={work_dir}',
-        tex_path,
+        pdf_tex_path,
     ]
 
     for run in range(2):  # two passes
@@ -207,13 +209,14 @@ def compile_latex(tex_content: str, output_name: str) -> tuple[str, str]:
                 detail=f"XeLaTeX compilation failed.\n{log_excerpt}"
             )
 
-    if not os.path.exists(pdf_path):
+    if not os.path.exists(pdf_output_path):
         raise HTTPException(status_code=500, detail="PDF not found after compilation.")
 
     # ── Pandoc conversion (DOCX) ──────────────────────────────
+    # Using the optimized docx_tex_path for Word
     pandoc_cmd = [
         'pandoc',
-        tex_path,
+        docx_tex_path,
         '-o', docx_path,
     ]
     pandoc_result = subprocess.run(
@@ -228,8 +231,8 @@ def compile_latex(tex_content: str, output_name: str) -> tuple[str, str]:
 
     # ── Bundle into ZIP ───────────────────────────────────────
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        if os.path.exists(pdf_path):
-            zf.write(pdf_path, f"{output_name}.pdf")
+        if os.path.exists(pdf_output_path):
+            zf.write(pdf_output_path, f"{output_name}.pdf")
         if os.path.exists(docx_path):
             zf.write(docx_path, f"{output_name}.docx")
 
@@ -263,12 +266,17 @@ async def generate_paper(req: GenerateRequest):
     if not rows:
         raise HTTPException(status_code=400, detail="No question rows found in the sheet.")
 
-    # Build LaTeX
-    tex_content = build_latex_document(rows, title)
+    # Build LaTeX (Two different versions)
+    pdf_tex_content  = build_latex_document(rows, title, for_docx=False)
+    docx_tex_content = build_latex_document(rows, title, for_docx=True)
 
     # Compile PDF + generate DOCX + bundle ZIP
     safe_name = re.sub(r'[^\w\-]', '_', title)[:80] or "paper"
-    zip_path, work_dir = compile_latex(tex_content, safe_name)
+    zip_path, work_dir = compile_latex(pdf_tex_content, docx_tex_content, safe_name)
+    
+    # ── Rename PDF internal path if needed to match safe_name.pdf ─────
+    # xelatex generates {safe_name}_pdf.pdf because input was {safe_name}_pdf.tex
+    # But we want {safe_name}.pdf in the ZIP. This is handled by ZIP write below.
 
     # Stream back the ZIP
     response = FileResponse(
