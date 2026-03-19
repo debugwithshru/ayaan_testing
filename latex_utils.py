@@ -131,19 +131,14 @@ def process_content(content: str) -> str:
 
 def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, test_title: str | None = None) -> str:
     """
-    Builds a complete XeLaTeX document:
-      - Two-column page layout (multicols)
-      - Each question in a bordered tabularx table
-      - 3 columns: Q.No | SR No. | Question + Options
-      - Answer key in compact multi-column list
+    Builds a complete XeLaTeX document optimized for either PDF or Word (via Pandoc).
     """
 
     has_any_sr_no = any(str(row.get('SR_NO', '')).strip() for row in rows)
 
-    # Logo Setup: Must use absolute path for Docker/XeLaTeX temp directory
+    # Logo Setup
     logo_path = "/app/COCOON_LOGO.png"
     if not os.path.exists(logo_path):
-        # Local development fallback
         if os.path.exists("COCOON_LOGO.webp"):
             logo_path = os.path.abspath("COCOON_LOGO.webp")
         elif os.path.exists("COCOON_LOGO.png"):
@@ -160,12 +155,13 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
 \usepackage{graphicx}
 \usepackage[export]{adjustbox}
 \usepackage{longtable}
+\usepackage{tabularx}
 \usepackage{array}
 \usepackage{xltxtra}
 \usepackage{fontspec}
 \setmainfont{Latin Modern Roman}
 
-\setlength{\parskip}{0pt}
+\setlength{\parskip}{6pt}
 \setlength{\parindent}{0pt}
 \renewcommand{\arraystretch}{1.5}
 
@@ -199,25 +195,40 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
 """
 
     # ── Header ──────────────────────────────────────────────
-    # Logo on Left, Group Name Center, Test Title below
     header_title = escape_latex_text("COCOON GROUP TUITIONS")
     header_subtitle = escape_latex_text(test_title or title)
     
-    header = r'\begin{center}' + '\n'
-    header += r'  \begin{minipage}{0.15\textwidth}' + '\n'
-    # Use logo if file exists; otherwise placeholder
-    if os.path.exists(logo_path) or logo_path == "/app/COCOON_LOGO.png":
-        header += rf'    \includegraphics[width=\textwidth]{{{logo_path}}}' + '\n'
+    if for_docx:
+        # Word needs a TABLE for the header to keep Logo left and Text center
+        header = r'\begin{center}' + '\n'
+        header += r'  \begin{tabular}{@{}m{2.5cm}m{\dimexpr\textwidth-3cm\relax}@{}}' + '\n'
+        if os.path.exists(logo_path) or logo_path == "/app/COCOON_LOGO.png":
+            header += rf'    \includegraphics[width=2cm]{{{logo_path}}} &' + '\n'
+        else:
+            header += r'    [LOGO] &' + '\n'
+        header += r'    \begin{center}' + '\n'
+        header += rf'      {{\LARGE\textbf{{{header_title}}}}}\\[0.2em]' + '\n'
+        header += rf'      {{\Large\textbf{{{header_subtitle}}}}}' + '\n' # Bold title
+        header += r'    \end{center}' + '\n'
+        header += r'  \end{tabular}' + '\n'
+        header += r'\end{center}' + '\n'
     else:
-        header += r'    [LOGO]' + '\n'
-    header += r'  \end{minipage}' + '\n'
-    header += r'  \begin{minipage}{0.8\textwidth}' + '\n'
-    header += r'    \begin{center}' + '\n'
-    header += rf'      {{\LARGE\textbf{{{header_title}}}}}\\[0.2em]' + '\n'
-    header += rf'      {{\Large {{{header_subtitle}}}}}' + '\n'
-    header += r'    \end{center}' + '\n'
-    header += r'  \end{minipage}' + '\n'
-    header += r'\end{center}' + '\n'
+        # PDF Header (Minipage)
+        header = r'\begin{center}' + '\n'
+        header += r'  \begin{minipage}{0.15\textwidth}' + '\n'
+        if os.path.exists(logo_path) or logo_path == "/app/COCOON_LOGO.png":
+            header += rf'    \includegraphics[width=\textwidth]{{{logo_path}}}' + '\n'
+        else:
+            header += r'    [LOGO]' + '\n'
+        header += r'  \end{minipage}' + '\n'
+        header += r'  \begin{minipage}{0.8\textwidth}' + '\n'
+        header += r'    \begin{center}' + '\n'
+        header += rf'      {{\LARGE\textbf{{{header_title}}}}}\\[0.2em]' + '\n'
+        header += rf'      {{\Large\textbf{{{header_subtitle}}}}}' + '\n' # Bold title
+        header += r'    \end{center}' + '\n'
+        header += r'  \end{minipage}' + '\n'
+        header += r'\end{center}' + '\n'
+
     header += r'\noindent\rule{\linewidth}{0.4pt}' + '\n'
     header += r'\vspace{0.3em}' + '\n\n'
 
@@ -225,19 +236,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
     answer_data = []
 
     if for_docx:
-        # Word-optimized layout
-        if has_any_sr_no:
-            col_spec = r'|c|c|p{\dimexpr\textwidth-4.2cm\relax}|'
-            tbl_header = r'\textbf{Q.No} & \textbf{SR No.} & \textbf{Question} \\ \hline'
-        else:
-            col_spec = r'|c|p{\dimexpr\textwidth-2cm\relax}|'
-            tbl_header = r'\textbf{Q.No} & \textbf{Question} \\ \hline'
-
-        content += r'\begin{longtable}{' + col_spec + '}\n'
-        content += r'\hline' + '\n'
-        content += tbl_header + '\n'
-        content += r'\endhead' + '\n'
-
+        # Word-optimized: Individual tables per question for cleaner conversion
         for i, row in enumerate(rows, start=1):
             raw_sr_no = str(row.get('SR_NO', '')).strip()
             safe_sr_no = escape_latex_text(raw_sr_no) if raw_sr_no else ''
@@ -248,22 +247,28 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
             opt_d  = process_content(str(row.get('Option_D',  '')).strip())
             answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-            # Options for Word: simplified grid
-            cell = q_text
-            option_grid = r' \newline \begin{tabular}{@{}p{0.45\linewidth}p{0.45\linewidth}@{}}' + '\n'
+            # Options grid for Word
+            option_grid = r' \begin{tabular}{@{}p{0.45\linewidth}p{0.45\linewidth}@{}}' + '\n'
             option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\' + '\n'
             option_grid += f' (c)~{opt_c} & (d)~{opt_d} \\\\' + '\n'
             option_grid += r'\end{tabular}'
             
-            cell += option_grid
+            cell = q_text + r' \newline ' + option_grid
 
+            content += r'\noindent' + '\n'
             if has_any_sr_no:
-                content += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\ \\hline\n'
+                # Use tabularx for Word too if possible, Pandoc handles simple tabularx
+                content += r'\begin{tabularx}{\textwidth}{|c|c|X|}' + '\n'
+                content += r'\hline' + '\n'
+                content += f'\\textbf{{{i}}} & {safe_sr_no} & {cell} \\\\' + '\n'
             else:
-                content += f'\\textbf{{{i}}} & {cell} \\\\ \\hline\n'
+                content += r'\begin{tabularx}{\textwidth}{|c|X|}' + '\n'
+                content += r'\hline' + '\n'
+                content += f'\\textbf{{{i}}} & {cell} \\\\' + '\n'
+            content += r'\hline' + '\n'
+            content += r'\end{tabularx}' + '\n'
+            content += r'\vspace{0.3em}' + '\n\n'
             answer_data.append((i, safe_sr_no, answer))
-        
-        content += r'\end{longtable}' + '\n\n'
 
     else:
         # PDF-optimized layout
@@ -280,8 +285,7 @@ def build_latex_document(rows: list[dict], title: str, for_docx: bool = False, t
             opt_d  = process_content(str(row.get('Option_D',  '')).strip())
             answer = process_content(str(row.get('Correct_Answer', '')).strip())
 
-            # Options for PDF: Balanced 2x2 grid using nested tabular for perfect alignment
-            # Options (b) and (d) are moved left by using a 45% / 45% split
+            # Options for PDF: Balanced 2x2 grid
             option_grid = r' \begin{tabular}{@{}p{0.45\linewidth}p{0.45\linewidth}@{}}' + '\n'
             option_grid += f' (a)~{opt_a} & (b)~{opt_b} \\\\' + '\n'
             option_grid += f' (c)~{opt_c} & (d)~{opt_d} \\' + '\n'
