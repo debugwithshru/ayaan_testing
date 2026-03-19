@@ -10,5 +10,6 @@ venv/
 *.log
 *.aux
 *.docx
+*.zip
 paper_engine/
 tmp/
