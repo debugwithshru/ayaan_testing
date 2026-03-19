@@ -11,4 +11,5 @@ paper_engine/
 *.log
 *.aux
 *.docx
+*.zip
 tmp/
