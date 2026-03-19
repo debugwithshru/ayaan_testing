@@ -24,6 +24,7 @@ app = FastAPI(title="Ayaan Paper Generator")
 class GenerateRequest(BaseModel):
     sheet_link: str
     email: str | None = None
+    title_name: str | None = None
 
 
 # ─────────────────────────────────────────────
@@ -267,8 +268,10 @@ async def generate_paper(req: GenerateRequest):
         raise HTTPException(status_code=400, detail="No question rows found in the sheet.")
 
     # Build LaTeX (Two different versions)
-    pdf_tex_content  = build_latex_document(rows, title, for_docx=False)
-    docx_tex_content = build_latex_document(rows, title, for_docx=True)
+    # title_name from JSON overrides the default sheet title for the header
+    test_title = req.title_name or title
+    pdf_tex_content  = build_latex_document(rows, title, for_docx=False, test_title=test_title)
+    docx_tex_content = build_latex_document(rows, title, for_docx=True, test_title=test_title)
 
     # Compile PDF + generate DOCX + bundle ZIP
     safe_name = re.sub(r'[^\w\-]', '_', title)[:80] or "paper"

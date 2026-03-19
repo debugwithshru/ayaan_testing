@@ -31,6 +31,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
+# Copy logo and convert to PNG (XeLaTeX compatibility)
+COPY COCOON_LOGO.webp .
+RUN apt-get update && apt-get install -y --no-install-recommends webp && \
+    dwebp COCOON_LOGO.webp -o COCOON_LOGO.png && \
+    apt-get purge -y webp && apt-get autoremove -y && apt-get clean
+
 COPY app.py .
 COPY latex_utils.py .
 
