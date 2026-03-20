@@ -21,15 +21,15 @@ app = FastAPI(title="Ayaan Paper Generator")
 # ─────────────────────────────────────────────
 # Request schema
 # ─────────────────────────────────────────────
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AliasChoices
 import random
 
 class GenerateRequest(BaseModel):
-    sheet_link: str = Field(..., alias="sheet link")
+    sheet_link: str = Field(..., alias="sheet link", validation_alias=AliasChoices("sheet link", "sheet_link"))
     email: str | None = None
-    title_name: str | None = Field(None, alias="Title Name ")
-    difficulty: list[str] | None = Field(None, alias="DIFFICULTY")
-    question_amount: str | int | None = Field(None, alias="QUESTION AMOUNT ")
+    title_name: str | None = Field(None, alias="Title Name ", validation_alias=AliasChoices("Title Name ", "Title Name", "title_name"))
+    difficulty: list[str] | None = Field(None, alias="DIFFICULTY", validation_alias=AliasChoices("DIFFICULTY", "difficulty"))
+    question_amount: str | int | None = Field(None, alias="QUESTION AMOUNT ", validation_alias=AliasChoices("QUESTION AMOUNT ", "QUESTION AMOUNT", "question_amount"))
 
     class Config:
         populate_by_name = True
@@ -156,6 +156,8 @@ def fetch_sheet_as_csv(sheet_id: str, gid: str) -> list[dict]:
             if field.strip() in variations:
                 mapping[field] = internal_key
                 break
+    
+    print(f"DEBUG: CSV Mapping -> {mapping}")
 
     for row in reader:
         # Normalize the row based on the mapping
@@ -168,6 +170,10 @@ def fetch_sheet_as_csv(sheet_id: str, gid: str) -> list[dict]:
         if normalized_row.get('Question_Text', '').strip() == 'Question_Text':
             continue
         rows.append(normalized_row)
+    
+    if rows:
+        print(f"DEBUG: Sample Row Keys -> {list(rows[0].keys())}")
+    
     return rows
 
 
@@ -258,18 +264,24 @@ def compile_latex(pdf_tex: str, docx_tex: str, output_name: str) -> tuple[str, s
 # Endpoint
 # ─────────────────────────────────────────────
 @app.post("/generate")
-async def generate_paper(req_data: GenerateRequest | list[GenerateRequest]):
+async def generate_paper(req_data: GenerateRequest | list[GenerateRequest] | dict | list[dict]):
     """
     Accepts a Google Sheets link, fetches question data, filters by difficulty,
     randomizes order, and generates a formatted PDF + DOCX in a ZIP.
     """
-    # Handle array or single object
+    # 1. Handle incoming data formats: ensures we get a single GenerateRequest object
     if isinstance(req_data, list):
         if not req_data:
             raise HTTPException(status_code=400, detail="Empty request list.")
-        req = req_data[0]
+        item = req_data[0]
+        req = GenerateRequest(**item) if isinstance(item, dict) else item
+    elif isinstance(req_data, dict):
+        req = GenerateRequest(**req_data)
     else:
         req = req_data
+
+    # Log incoming request data for debugging
+    print(f"DEBUG: Request Title='{req.title_name}', Diff={req.difficulty}, Amount={req.question_amount}")
 
     sheet_id, gid = extract_sheet_id(req.sheet_link)
     if not sheet_id:
@@ -278,69 +290,72 @@ async def generate_paper(req_data: GenerateRequest | list[GenerateRequest]):
             detail="Could not parse a Google Sheets ID from the provided link."
         )
 
-    # Fetch title and data
+    # 2. Fetch data from Google Sheets
     title = get_sheet_title(sheet_id)
     rows  = fetch_sheet_as_csv(sheet_id, gid)
 
     if not rows:
         raise HTTPException(status_code=400, detail="No question rows found in the sheet.")
+    
+    print(f"DEBUG: Fetched {len(rows)} raw rows from sheet.")
 
-    # 1. Filter by Difficulty
+    # 3. Filter by Difficulty
     if req.difficulty:
         req_diffs = [d.strip() for d in req.difficulty if d.strip()]
         if req_diffs:
             # Primary pool: matching difficulties
-            pool = [r for r in rows if r.get('DIFFICULTY', '').strip() in req_diffs]
+            pool = [r for r in rows if str(r.get('DIFFICULTY', '')).strip() in req_diffs]
+            print(f"DEBUG: Found {len(pool)} matching rows for {req_diffs}")
             
-            # 2. Fallback: if not enough, collect others
+            # Fill with fallback if not enough questions matching criteria
             limit = None
             if req.question_amount:
                 try:
                     limit = int(req.question_amount)
-                except:
+                except (ValueError, TypeError):
                     pass
             
             if limit and len(pool) < limit:
-                # Add others to reach the limit
                 others = [r for r in rows if r not in pool]
-                # Shuffle others before picking to avoid biased fallback
                 random.shuffle(others)
                 pool.extend(others)
+                print(f"DEBUG: Fallback applied. Total pool is now {len(pool)} rows.")
             
             rows = pool
 
-    # 3. Always Randomize the resulting list
+    # 4. Global Randomization
     random.shuffle(rows)
 
-    # 4. Limit to requested amount
+    # 5. Question Amount Limiting
     if req.question_amount:
         try:
             limit = int(req.question_amount)
+            print(f"DEBUG: Limiting document to {limit} questions.")
             rows = rows[:limit]
-        except ValueError:
+        except (ValueError, TypeError):
+            print(f"DEBUG: Failed to parse limit: {req.question_amount}")
             pass
+
+    print(f"DEBUG: Final row count for paper: {len(rows)}")
 
     if not rows:
         raise HTTPException(status_code=400, detail="No questions matched the request after filtering.")
 
-    # Build LaTeX (Two different versions)
+    # 6. Build LaTeX
     test_title = req.title_name or title
     pdf_tex_content  = build_latex_document(rows, title, for_docx=False, test_title=test_title)
     docx_tex_content = build_latex_document(rows, title, for_docx=True, test_title=test_title)
 
-    # Compile PDF + generate DOCX + bundle ZIP
-    # Use test_title for filenames
+    # 7. Compilation and ZIP creation
     safe_name = re.sub(r'[^\w\-]', '_', test_title)[:80] or "paper"
     zip_path, work_dir = compile_latex(pdf_tex_content, docx_tex_content, safe_name)
     
-    # Stream back the ZIP
-    response = FileResponse(
+    # 8. Return response
+    return FileResponse(
         path=zip_path,
         media_type='application/zip',
         filename=f"{safe_name}.zip",
     )
-
-    return response
 
 
 @app.get("/health")
