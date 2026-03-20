@@ -47,7 +47,18 @@ class GenerateRequest(BaseModel):
         for canonical, variants in mapping.items():
             for variant in variants:
                 if variant in data and data[variant] is not None:
-                    data[canonical] = data[variant]
+                    value = data[variant]
+                    
+                    # Robustness for difficulty: handle strings and nested lists
+                    if canonical == "difficulty":
+                        if isinstance(value, str):
+                            # Split comma-separated string
+                            value = [v.strip() for v in value.split(",") if v.strip()]
+                        elif isinstance(value, list) and value and isinstance(value[0], list):
+                            # Flatten nested list if user accidentally sends [["Easy", "Medium"]]
+                            value = [v for sublist in value for v in (sublist if isinstance(sublist, list) else [sublist])]
+                    
+                    data[canonical] = value
                     break
         return data
 
