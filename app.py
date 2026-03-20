@@ -21,10 +21,18 @@ app = FastAPI(title="Ayaan Paper Generator")
 # ─────────────────────────────────────────────
 # Request schema
 # ─────────────────────────────────────────────
+from pydantic import BaseModel, Field
+import random
+
 class GenerateRequest(BaseModel):
-    sheet_link: str
+    sheet_link: str = Field(..., alias="sheet link")
     email: str | None = None
-    title_name: str | None = None
+    title_name: str | None = Field(None, alias="Title Name ")
+    difficulty: list[str] | None = Field(None, alias="DIFFICULTY")
+    question_amount: str | int | None = Field(None, alias="QUESTION AMOUNT ")
+
+    class Config:
+        populate_by_name = True
 
 
 # ─────────────────────────────────────────────
@@ -136,6 +144,7 @@ def fetch_sheet_as_csv(sheet_id: str, gid: str) -> list[dict]:
         'Option_C': ['Option_C', 'Option C', 'C'],
         'Option_D': ['Option_D', 'Option D', 'D'],
         'Correct_Answer': ['Correct_Answer', 'Correct Answer', 'Answer'],
+        'DIFFICULTY': ['DIFFICULTY', 'Difficulty', 'difficulty', 'DIFFICULTY LEVEL', 'Difficulty Level', 'difficulty level'],
     }
 
     rows = []
@@ -249,15 +258,19 @@ def compile_latex(pdf_tex: str, docx_tex: str, output_name: str) -> tuple[str, s
 # Endpoint
 # ─────────────────────────────────────────────
 @app.post("/generate")
-async def generate_paper(req: GenerateRequest):
+async def generate_paper(req_data: GenerateRequest | list[GenerateRequest]):
     """
-    Accepts a Google Sheets link, fetches question data, generates a
-    formatted PDF with:
-      - Numbered questions with A/B/C/D options
-      - Inline LaTeX inside $...$ and block LaTeX inside $$...$$
-      - Answer key on the final page
-    Returns the PDF as a downloadable file.
+    Accepts a Google Sheets link, fetches question data, filters by difficulty,
+    randomizes order, and generates a formatted PDF + DOCX in a ZIP.
     """
+    # Handle array or single object
+    if isinstance(req_data, list):
+        if not req_data:
+            raise HTTPException(status_code=400, detail="Empty request list.")
+        req = req_data[0]
+    else:
+        req = req_data
+
     sheet_id, gid = extract_sheet_id(req.sheet_link)
     if not sheet_id:
         raise HTTPException(
@@ -272,31 +285,60 @@ async def generate_paper(req: GenerateRequest):
     if not rows:
         raise HTTPException(status_code=400, detail="No question rows found in the sheet.")
 
+    # 1. Filter by Difficulty
+    if req.difficulty:
+        req_diffs = [d.strip() for d in req.difficulty if d.strip()]
+        if req_diffs:
+            # Primary pool: matching difficulties
+            pool = [r for r in rows if r.get('DIFFICULTY', '').strip() in req_diffs]
+            
+            # 2. Fallback: if not enough, collect others
+            limit = None
+            if req.question_amount:
+                try:
+                    limit = int(req.question_amount)
+                except:
+                    pass
+            
+            if limit and len(pool) < limit:
+                # Add others to reach the limit
+                others = [r for r in rows if r not in pool]
+                # Shuffle others before picking to avoid biased fallback
+                random.shuffle(others)
+                pool.extend(others)
+            
+            rows = pool
+
+    # 3. Always Randomize the resulting list
+    random.shuffle(rows)
+
+    # 4. Limit to requested amount
+    if req.question_amount:
+        try:
+            limit = int(req.question_amount)
+            rows = rows[:limit]
+        except ValueError:
+            pass
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No questions matched the request after filtering.")
+
     # Build LaTeX (Two different versions)
-    # title_name from JSON overrides the default sheet title for the header
     test_title = req.title_name or title
     pdf_tex_content  = build_latex_document(rows, title, for_docx=False, test_title=test_title)
     docx_tex_content = build_latex_document(rows, title, for_docx=True, test_title=test_title)
 
     # Compile PDF + generate DOCX + bundle ZIP
-    safe_name = re.sub(r'[^\w\-]', '_', title)[:80] or "paper"
+    # Use test_title for filenames
+    safe_name = re.sub(r'[^\w\-]', '_', test_title)[:80] or "paper"
     zip_path, work_dir = compile_latex(pdf_tex_content, docx_tex_content, safe_name)
     
-    # ── Rename PDF internal path if needed to match safe_name.pdf ─────
-    # xelatex generates {safe_name}_pdf.pdf because input was {safe_name}_pdf.tex
-    # But we want {safe_name}.pdf in the ZIP. This is handled by ZIP write below.
-
     # Stream back the ZIP
     response = FileResponse(
         path=zip_path,
         media_type='application/zip',
         filename=f"{safe_name}.zip",
-        background=None,
     )
-
-    # We can't delete work_dir while streaming; Railway's ephemeral FS
-    # will clean up; but on long-running servers schedule a cleanup.
-    # For now, leave in /tmp — OS will reclaim eventually.
 
     return response
 
