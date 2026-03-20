@@ -298,12 +298,13 @@ from typing import Any
 from fastapi import Request
 
 @app.post("/generate")
-async def generate_paper(data: Any, request: Request):
+async def generate_paper(request: Request):
     """
     Accepts a Google Sheets link, fetches question data, filters by difficulty,
     randomizes order, and generates a formatted PDF + DOCX in a ZIP.
     """
-    # 1. Log Raw JSON to see exactly what keys are being sent
+    # 1. Log Raw JSON and extract data
+    raw_json = None
     try:
         raw_json = await request.json()
         if isinstance(raw_json, list) and raw_json:
@@ -312,23 +313,25 @@ async def generate_paper(data: Any, request: Request):
             print(f"DEBUG: Raw JSON Keys: {list(raw_json.keys())}")
     except Exception as e:
         print(f"DEBUG: Could not parse raw JSON for logging: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
     # 2. Extract GenerateRequest object
     req = None
     try:
-        if isinstance(data, list) and data:
-            item = data[0]
+        if isinstance(raw_json, list) and raw_json:
+            item = raw_json[0]
             req = GenerateRequest(**item) if isinstance(item, dict) else item
-        elif isinstance(data, dict):
-            req = GenerateRequest(**data)
+        elif isinstance(raw_json, dict):
+            req = GenerateRequest(**raw_json)
         else:
-            req = data
+            # Fallback if raw_json is somehow not list or dict
+            raise ValueError("Data must be a JSON object or array.")
     except Exception as e:
         print(f"DEBUG: Pydantic parsing failed: {e}")
         raise HTTPException(status_code=400, detail=f"Request parsing failed: {e}")
 
     if not req:
-        raise HTTPException(status_code=400, detail="Invalid request data.")
+        raise HTTPException(status_code=400, detail="Invalid request data format.")
 
     print(f"DEBUG: Parsed Request -> Title: '{req.title_name}', Diff: {req.difficulty}, Amount: {req.question_amount}")
 
