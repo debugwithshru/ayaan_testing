@@ -21,7 +21,7 @@ app = FastAPI(title="Ayaan Paper Generator")
 # ─────────────────────────────────────────────
 # Request schema
 # ─────────────────────────────────────────────
-from pydantic import BaseModel, Field, AliasChoices
+from pydantic import BaseModel, Field, AliasChoices, model_validator
 import random
 
 class GenerateRequest(BaseModel):
@@ -30,6 +30,26 @@ class GenerateRequest(BaseModel):
     title_name: str | None = Field(None, alias="Title Name ", validation_alias=AliasChoices("Title Name ", "Title Name", "title_name"))
     difficulty: list[str] | None = Field(None, alias="DIFFICULTY", validation_alias=AliasChoices("DIFFICULTY", "difficulty"))
     question_amount: str | int | None = Field(None, alias="QUESTION AMOUNT ", validation_alias=AliasChoices("QUESTION AMOUNT ", "QUESTION AMOUNT", "question_amount"))
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_keys(cls, data: any) -> any:
+        if not isinstance(data, dict):
+            return data
+        
+        mapping = {
+            "sheet_link": ["sheet link", "sheet_link"],
+            "title_name": ["Title Name ", "Title Name", "title_name", "title name"],
+            "difficulty": ["DIFFICULTY", "difficulty", "DIFFICULTY ", "difficulty "],
+            "question_amount": ["QUESTION AMOUNT ", "QUESTION AMOUNT", "question_amount", "question amount"]
+        }
+        
+        for canonical, variants in mapping.items():
+            for variant in variants:
+                if variant in data and data[variant] is not None:
+                    data[canonical] = data[variant]
+                    break
+        return data
 
     class Config:
         populate_by_name = True
@@ -263,25 +283,42 @@ def compile_latex(pdf_tex: str, docx_tex: str, output_name: str) -> tuple[str, s
 # ─────────────────────────────────────────────
 # Endpoint
 # ─────────────────────────────────────────────
+from fastapi import Request
+
 @app.post("/generate")
-async def generate_paper(req_data: GenerateRequest | list[GenerateRequest] | dict | list[dict]):
+async def generate_paper(data: any, request: Request):
     """
     Accepts a Google Sheets link, fetches question data, filters by difficulty,
     randomizes order, and generates a formatted PDF + DOCX in a ZIP.
     """
-    # 1. Handle incoming data formats: ensures we get a single GenerateRequest object
-    if isinstance(req_data, list):
-        if not req_data:
-            raise HTTPException(status_code=400, detail="Empty request list.")
-        item = req_data[0]
-        req = GenerateRequest(**item) if isinstance(item, dict) else item
-    elif isinstance(req_data, dict):
-        req = GenerateRequest(**req_data)
-    else:
-        req = req_data
+    # 1. Log Raw JSON to see exactly what keys are being sent
+    try:
+        raw_json = await request.json()
+        if isinstance(raw_json, list) and raw_json:
+            print(f"DEBUG: Raw JSON Keys (first item): {list(raw_json[0].keys())}")
+        elif isinstance(raw_json, dict):
+            print(f"DEBUG: Raw JSON Keys: {list(raw_json.keys())}")
+    except Exception as e:
+        print(f"DEBUG: Could not parse raw JSON for logging: {e}")
 
-    # Log incoming request data for debugging
-    print(f"DEBUG: Request Title='{req.title_name}', Diff={req.difficulty}, Amount={req.question_amount}")
+    # 2. Extract GenerateRequest object
+    req = None
+    try:
+        if isinstance(data, list) and data:
+            item = data[0]
+            req = GenerateRequest(**item) if isinstance(item, dict) else item
+        elif isinstance(data, dict):
+            req = GenerateRequest(**data)
+        else:
+            req = data
+    except Exception as e:
+        print(f"DEBUG: Pydantic parsing failed: {e}")
+        raise HTTPException(status_code=400, detail=f"Request parsing failed: {e}")
+
+    if not req:
+        raise HTTPException(status_code=400, detail="Invalid request data.")
+
+    print(f"DEBUG: Parsed Request -> Title: '{req.title_name}', Diff: {req.difficulty}, Amount: {req.question_amount}")
 
     sheet_id, gid = extract_sheet_id(req.sheet_link)
     if not sheet_id:
