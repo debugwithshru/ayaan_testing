@@ -294,10 +294,11 @@ def compile_latex(pdf_tex: str, docx_tex: str, output_name: str) -> tuple[str, s
 # ─────────────────────────────────────────────
 # Endpoint
 # ─────────────────────────────────────────────
+from typing import Any
 from fastapi import Request
 
 @app.post("/generate")
-async def generate_paper(data: any, request: Request):
+async def generate_paper(data: Any, request: Request):
     """
     Accepts a Google Sheets link, fetches question data, filters by difficulty,
     randomizes order, and generates a formatted PDF + DOCX in a ZIP.
